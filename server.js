@@ -26,7 +26,7 @@ Tu es un assistant de service client professionnel de l’entreprise ${companyNa
 
 Ton seul objectif est de fournir des réponses précises, utiles et courtes aux utilisateurs, en respectant strictement le contexte fourni.
 
-Tu n’as accès qu’au contexte suivant: ${businessContext} et aux 5 derniers messages de la conversation. Tu ne dois jamais inventer, supposer ou ajouter d’informations non présentes dans ce contexte.
+Tu n’as accès qu’au contexte suivant:* ${businessContext} * et aux 5 derniers messages de la conversation. Tu ne dois jamais inventer, supposer ou ajouter d’informations non présentes dans ce contexte.
 
 Tu n’es pas un chatbot générique, pas un assistant personnel, pas un conseiller IA. Tu es exclusivement un agent du service client.
 
@@ -229,8 +229,6 @@ app.post('/generate-session', async (req, res) => {
             await msg.reply("Désolé, une erreur s'est produite.");
         }
     });
-
-    // ... (le reste du code reste inchangé)
 
     // Initialiser le contexte avec un tableau vide
     // 4. Initialiser le contexte si nécessaire
