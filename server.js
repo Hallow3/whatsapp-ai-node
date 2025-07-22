@@ -18,6 +18,40 @@ app.use('/qr', express.static('qr'));
 const sessions = {}; // mémoire
 const PORT = process.env.PORT;
 
+
+function buildSystemPrompt(businessContext, companyName, supportNumber) {
+    return `🎯 Prompt Système — IA Service Client WhatsApp (Strict, Contextuel, Dynamique)
+
+Tu es un assistant de service client professionnel de l’entreprise ${companyName} qui répond aux utilisateurs sur WhatsApp.
+
+Ton seul objectif est de fournir des réponses précises, utiles et courtes aux utilisateurs, en respectant strictement le contexte fourni.
+
+Tu n’as accès qu’au contexte suivant:* ${businessContext} * et aux 5 derniers messages de la conversation. Tu ne dois jamais inventer, supposer ou ajouter d’informations non présentes dans ce contexte.
+
+Tu n’es pas un chatbot générique, pas un assistant personnel, pas un conseiller IA. Tu es exclusivement un agent du service client.
+
+⚠️ Règles strictes à suivre :
+✅ Reste 100 % fidèle au contexte et aux derniers échanges.
+
+❌ N’invente jamais de réponse si l'information n'est pas explicitement présente.
+
+❌ Ne sors jamais du rôle de service client (pas de conseils de vie, pas de blagues, pas de discussions générales).
+
+❌ Ne dis jamais “je pense que”, “peut-être”, ou toute autre forme d’incertitude.
+
+❌ Ne mentionne aucun document, aucune source, aucune date, sauf si l’utilisateur le demande expressément.
+
+✅ Utilise un ton courtois, professionnel et concis.
+
+✅ Si l'information n’est pas disponible dans le contexte, réponds simplement :
+
+“Je ne suis pas en mesure de répondre à cette question pour le moment. Vous pouvez contacter notre support au ${supportNumber}.”
+
+✅ Termine tes phrases correctement. Si la réponse est longue, abrège ou divise en deux réponses.
+
+Ton objectif est d’être clair, fiable, et 100 % aligné avec le contexte défini dynamiquement.`;
+}
+
 function migrateContexts(contexts) {
     const migrated = {};
     for (const sessionId in contexts) {
@@ -36,13 +70,13 @@ function migrateContexts(contexts) {
 let sessionContext = {};
 
 if (fs.existsSync('sessions.json')) {
-        try {
+    try {
         const rawData = fs.readFileSync('sessions.json');
         const loadedContext = JSON.parse(rawData);
-        
+
         // Appliquer la migration si nécessaire
         sessionContext = migrateContexts(loadedContext);
-        
+
         // Sauvegarder la version migrée
         fs.writeFileSync('sessions.json', JSON.stringify(sessionContext, null, 2));
         console.log('Contextes migrés avec succès');
@@ -58,13 +92,21 @@ function saveContexts() {
 
 // MODIFICATIONS À PARTIR D'ICI
 app.post('/generate-session', async (req, res) => {
-    const { phone, context } = req.body;
+    const { phone, businessContext, companyName, supportNumber } = req.body;
+
+    if (!phone || !businessContext || !companyName || !supportNumber) {
+        return res.status(400).json({ error: 'Tous les paramètres sont requis' });
+    }
+
     const sessionId = phone.replace('+', '');
     const code = sessionId.slice(-6);
 
     if (sessions[sessionId]) {
         return res.status(400).json({ message: 'Session déjà active' });
     }
+
+    // Construire le prompt système
+    const systemPrompt = buildSystemPrompt(businessContext, companyName, supportNumber);
 
     const client = new Client({
         authStrategy: new LocalAuth({ clientId: sessionId }),
@@ -127,30 +169,37 @@ app.post('/generate-session', async (req, res) => {
         const axios = require('axios');
         const deepseekKey = process.env.DEEPSEEK_API_KEY;
 
-        // 3. Vérifier et corriger le format du contexte
+        // Vérifier et initialiser le contexte si nécessaire
         if (!sessionContext[sessionId] || !Array.isArray(sessionContext[sessionId])) {
             sessionContext[sessionId] = [
-                { role: 'system', content: context }
+                { role: 'system', content: systemPrompt  }
             ];
         }
 
-        // Nouvelle gestion du contexte
         const currentContext = sessionContext[sessionId];
 
-        // Ajouter le nouveau message
+        // Ajouter le nouveau message utilisateur
         currentContext.push({
             role: 'user',
             content: msg.body
         });
 
-        // Garder seulement les 5 derniers messages
-        const trimmedContext = currentContext.slice(-6);
+        // 1. TOUJOURS INCLURE LE CONTEXTE SYSTÈME
+        const systemMessage = currentContext[0];
+
+        // 2. Garder les 4 derniers échanges (8 messages) 
+        //    + le nouveau message (total 9 messages hors système)
+        const recentMessages = currentContext.slice(1);
+        const last8Recent = recentMessages.slice(-8);
+
+        // 3. Préparer le contexte final : système + historique récent
+        const messagesForApi = [systemMessage, ...last8Recent];
 
         try {
             const response = await axios.post('https://api.deepseek.com/chat/completions', {
                 model: 'deepseek-chat',
-                messages: trimmedContext,
-                max_tokens: 150,
+                messages: messagesForApi,
+                max_tokens: 250,
                 temperature: 0.7
             }, {
                 headers: {
@@ -167,8 +216,11 @@ app.post('/generate-session', async (req, res) => {
                 content: reply
             });
 
-            // Mettre à jour le contexte dans la session
-            sessionContext[sessionId] = currentContext;
+            // 4. Tronquer le contexte : système + 4 derniers échanges (9 messages max)
+            const allMessages = currentContext.slice(1);
+            const last8Messages = allMessages.slice(-8);
+            sessionContext[sessionId] = [systemMessage, ...last8Messages];
+
             saveContexts();
 
             await msg.reply(reply);
@@ -182,7 +234,7 @@ app.post('/generate-session', async (req, res) => {
     // 4. Initialiser le contexte si nécessaire
     if (!sessionContext[sessionId] || !Array.isArray(sessionContext[sessionId])) {
         sessionContext[sessionId] = [
-            { role: 'system', content: context }
+            { role: 'system', content: systemPrompt }
         ];
     }
 
@@ -196,6 +248,43 @@ app.post('/generate-session', async (req, res) => {
         sessionId,
         code,
         qrUrl: `${process.env.BASE_URL}/qr/${sessionId}.png`
+    });
+});
+
+app.post('/update-context', (req, res) => {
+    const { phone, businessContext, companyName, supportNumber } = req.body;
+    
+    if (!phone || !businessContext || !companyName || !supportNumber) {
+        return res.status(400).json({ error: 'Tous les paramètres sont requis' });
+    }
+
+    const sessionId = phone.replace('+', '');
+    
+    // Vérifier si le contexte existe pour cette session
+    if (!sessionContext[sessionId]) {
+        return res.status(404).json({ error: 'Session introuvable' });
+    }
+
+    // Construire le nouveau prompt système
+    const newSystemPrompt = buildSystemPrompt(businessContext, companyName, supportNumber);
+
+    // Mise à jour du contexte système (premier message du tableau)
+    sessionContext[sessionId][0] = { 
+        role: 'system', 
+        content: newSystemPrompt
+    };
+
+    // Réinitialiser l'historique de conversation
+    sessionContext[sessionId] = [sessionContext[sessionId][0]];
+
+    // Sauvegarde dans le fichier
+    saveContexts();
+
+    res.json({ 
+        success: true, 
+        message: 'Contexte mis à jour avec succès',
+        sessionId,
+        newSystemPrompt
     });
 });
 
