@@ -288,6 +288,54 @@ app.post('/update-context', (req, res) => {
     });
 });
 
+// Ajoutez cette route après la route /update-context
+app.post('/send-message', async (req, res) => {
+    const { sender, recipient, message } = req.body;
+
+    // Validation des paramètres
+    if (!sender || !recipient || !message) {
+        return res.status(400).json({ error: 'Tous les paramètres sont requis (sender, recipient, message)' });
+    }
+
+    // Formatter les numéros (supprimer les '+' et espaces)
+    const cleanSender = sender.replace(/[+\s]/g, '');
+    const cleanRecipient = recipient.replace(/[+\s]/g, '');
+
+    // Vérifier si la session existe
+    if (!sessions[cleanSender]) {
+        return res.status(404).json({ error: 'Session introuvable pour cet expéditeur' });
+    }
+
+    try {
+        const client = sessions[cleanSender];
+        const formattedRecipient = `${cleanRecipient}@c.us`;
+        
+        // Vérifier si le client est prêt
+        if (client.info === undefined) {
+            return res.status(425).json({ error: 'Client WhatsApp pas encore prêt' });
+        }
+
+        // Envoyer le message
+        await client.sendMessage(formattedRecipient, message);
+        
+        res.json({ 
+            success: true,
+            message: 'Message envoyé avec succès',
+            details: {
+                from: cleanSender,
+                to: cleanRecipient,
+                length: message.length
+            }
+        });
+    } catch (error) {
+        console.error('Erreur envoi message:', error);
+        res.status(500).json({ 
+            error: "Échec d'envoi du message",
+            details: error.message 
+        });
+    }
+});
+
 app.listen(PORT, () => {
     console.log(`Serveur démarré sur le port ${PORT}`);
 });
